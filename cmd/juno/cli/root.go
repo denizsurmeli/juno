@@ -56,16 +56,21 @@ var (
 				os.Exit(0)
 			}(sig)
 
+			feederGatewayClient := feeder.NewClient(config.Runtime.Starknet.FeederGateway, "/feeder_gateway", nil)
 			// Subscribe the RPC client to the main loop if it is enabled in
 			// the config.
 			if config.Runtime.RPC.Enabled {
-				s := rpc.NewServer(":" + strconv.Itoa(config.Runtime.RPC.Port))
+				s := rpc.NewServer(":"+strconv.Itoa(config.Runtime.RPC.Port), feederGatewayClient)
 				processHandler.Add("RPC", s.ListenAndServe, s.Close)
 			}
 
 			if config.Runtime.Metrics.Enabled {
 				s := metric.SetupMetric(":" + strconv.Itoa(config.Runtime.Metrics.Port))
 				processHandler.Add("Metrics", s.ListenAndServe, s.Close)
+			}
+
+			if err := db.InitializeDatabaseEnv(config.Runtime.DbPath, 10, 0); err != nil {
+				log.Default.With("Error", err).Fatal("Error starting the database environment")
 			}
 
 			// Initialize ABI Service
@@ -81,20 +86,25 @@ var (
 			processHandler.Add("Block Storage Service", services.BlockService.Run, services.BlockService.Close)
 
 			// Initialize Contract Hash storage service
-			database := db.Databaser(db.NewKeyValueDb(filepath.Join(config.Runtime.DbPath, "contractHash"), 0))
-			contractHashService := services.NewContractHashService(database)
-			processHandler.Add("Contract Hash Storage Service", contractHashService.Run, contractHashService.Close)
+			processHandler.Add("Contract Hash Storage Service", services.ContractHashService.Run, services.ContractHashService.Close)
 
 			// Subscribe the Starknet Synchronizer to the main loop if it is enabled in
 			// the config.
 			if config.Runtime.Starknet.Enabled {
-				ethereumClient, err := ethclient.Dial(config.Runtime.Ethereum.Node)
-				if err != nil {
-					log.Default.With("Error", err).Fatal("Unable to connect to Ethereum Client")
+				var ethereumClient *ethclient.Client
+				if !config.Runtime.Starknet.ApiSync {
+					var err error
+					ethereumClient, err = ethclient.Dial(config.Runtime.Ethereum.Node)
+					if err != nil {
+						log.Default.With("Error", err).Fatal("Unable to connect to Ethereum Client")
+					}
 				}
-				feederGatewayClient := feeder.NewClient(config.Runtime.Starknet.FeederGateway, "/feeder_gateway", nil)
 				// Synchronizer for Starknet State
-				stateSynchronizer := starknet.NewSynchronizer(db.NewKeyValueDb(config.Runtime.DbPath, 0), ethereumClient, feederGatewayClient)
+				synchronizerDb, err := db.GetDatabase("SYNCHRONIZER")
+				if err != nil {
+					log.Default.With("Error", err).Fatal("Error starting the SYNCHRONIZER database")
+				}
+				stateSynchronizer := starknet.NewSynchronizer(synchronizerDb, ethereumClient, feederGatewayClient)
 				processHandler.Add("Starknet Synchronizer", stateSynchronizer.UpdateState,
 					stateSynchronizer.Close)
 			}

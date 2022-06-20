@@ -32,7 +32,7 @@ type Synchronizer struct {
 	ethereumClient      *ethclient.Client
 	feederGatewayClient *feeder.Client
 	database            db.Databaser
-	transactioner       db.Transactioner
+	transactioner       db.Transactioner2
 	memoryPageHash      *starknetTypes.Dictionary
 	gpsVerifier         *starknetTypes.Dictionary
 	facts               *starknetTypes.Dictionary
@@ -40,11 +40,22 @@ type Synchronizer struct {
 }
 
 // NewSynchronizer creates a new Synchronizer
-func NewSynchronizer(txnDb db.Databaser, client *ethclient.Client, fClient *feeder.Client) *Synchronizer {
-	chainID, err := client.ChainID(context.Background())
-	if err != nil {
+func NewSynchronizer(txnDb db.TransactionalDb, client *ethclient.Client, fClient *feeder.Client) *Synchronizer {
+	var chainID *big.Int
+	if client == nil {
 		// notest
-		log.Default.Panic("Unable to retrieve chain ID from Ethereum Node")
+		if config.Runtime.Starknet.Network == "mainnet" {
+			chainID = new(big.Int).SetInt64(1)
+		} else {
+			chainID = new(big.Int).SetInt64(0)
+		}
+	} else {
+		var err error
+		chainID, err = client.ChainID(context.Background())
+		if err != nil {
+			// notest
+			log.Default.Panic("Unable to retrieve chain ID from Ethereum Node")
+		}
 	}
 	return &Synchronizer{
 		ethereumClient:      client,
@@ -54,7 +65,7 @@ func NewSynchronizer(txnDb db.Databaser, client *ethclient.Client, fClient *feed
 		gpsVerifier:         starknetTypes.NewDictionary(txnDb, "gps_verifier"),
 		facts:               starknetTypes.NewDictionary(txnDb, "facts"),
 		chainID:             chainID.Int64(),
-		transactioner:       db.NewTransactionDb(txnDb.GetEnv()),
+		transactioner:       txnDb,
 	}
 }
 
@@ -354,13 +365,27 @@ func (s *Synchronizer) updateAndCommitState(
 	sequenceNumber uint64,
 ) uint64 {
 	start := time.Now()
-	txn := s.transactioner.Begin()
-	hashService := services.GetContractHashService()
-	if hashService == nil {
-		metr.IncreaseCountStarknetStateFailed()
-		log.Default.Panic("Contract hash service is unavailable")
+	// Save contract hashes of the new contracts
+	for _, deployedContract := range stateDiff.DeployedContracts {
+		contractHash, ok := new(big.Int).SetString(remove0x(deployedContract.ContractHash), 16)
+		if !ok {
+			// notest
+			metr.IncreaseCountStarknetStateFailed()
+			log.Default.Panic("Couldn't get contract hash")
+		}
+		services.ContractHashService.StoreContractHash(remove0x(deployedContract.Address), contractHash)
 	}
-	_, err := updateState(txn, hashService, stateDiff, newRoot, sequenceNumber)
+	// Build contractAddress-contractHash map
+	contractHashMap := make(map[string]*big.Int)
+	for contractAddress := range stateDiff.StorageDiffs {
+		formattedAddress := remove0x(contractAddress)
+		contractHashMap[formattedAddress] = services.ContractHashService.GetContractHash(formattedAddress)
+	}
+	txn, err := s.transactioner.Begin()
+	if err != nil {
+		log.Default.Fatal(err)
+	}
+	_, err = updateState(txn, contractHashMap, stateDiff, newRoot, sequenceNumber)
 	if err != nil {
 		metr.IncreaseCountStarknetStateFailed()
 		log.Default.With("Error", err).Panic("Couldn't update state")
@@ -422,7 +447,9 @@ func getFactInfo(starknetLogs []types.Log, contract ethAbi.ABI, fact string, lat
 func (s *Synchronizer) Close(ctx context.Context) {
 	// notest
 	log.Default.Info("Closing Layer 1 Synchronizer")
-	s.ethereumClient.Close()
+	if s.ethereumClient != nil {
+		s.ethereumClient.Close()
+	}
 	s.database.Close()
 }
 
