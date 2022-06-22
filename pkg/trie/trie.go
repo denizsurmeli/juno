@@ -28,7 +28,7 @@ type trie struct {
 }
 
 // New creates a new trie, pass zero as root hash to initialize an empty trie
-func New(kvStorer store.KVStorer, rootHash *types.Felt, height int) (*trie, error) {
+func New(kvStorer store.KVStorer, rootHash *types.Felt, height int) (Trie, error) {
 	storer := &trieStorer{kvStorer}
 	if root, err := storer.retrieveByH(rootHash); err != nil {
 		return nil, err
@@ -49,6 +49,9 @@ func (t *trie) RootHash() *types.Felt {
 func (t *trie) Get(key *types.Felt) (*types.Felt, error) {
 	path := NewPath(t.height, key.Bytes())
 	leaf, _, err := t.get(path)
+	if err == ErrNotFound {
+		return &types.EmptyFelt, nil
+	}
 	return leaf.Bottom, err
 }
 
@@ -56,7 +59,7 @@ func (t *trie) Get(key *types.Felt) (*types.Felt, error) {
 func (t *trie) Put(key *types.Felt, value *types.Felt) error {
 	path := NewPath(t.height, key.Bytes())
 	_, siblings, err := t.get(path)
-	if err != nil {
+	if err != nil && err != ErrNotFound {
 		return err
 	}
 	return t.put(path, &Node{EmptyPath, value}, siblings)

@@ -23,9 +23,13 @@ import (
 )
 
 // newTrie returns a new Trie
-func newTrie(database db.Databaser, prefix string) trie.Trie {
+func newTrie(database db.Databaser, rootHash types.Felt, prefix string) trie.Trie {
 	store := db.NewKeyValueStore(database, prefix)
-	return trie.New(store, 251)
+	t, err := trie.New(store, &rootHash, 251)
+	if err != nil {
+		log.Default.Panic("Couldn't load the t")
+	}
+	return t
 }
 
 // loadContractInfo loads a contract ABI and set the events that later we are going to use
@@ -170,7 +174,15 @@ func updateState(
 ) (string, error) {
 	log.Default.With("Block Number", sequenceNumber).Info("Processing block")
 
-	stateTrie := newTrie(txn, "state_trie_")
+	get, err := txn.Get([]byte(starknetTypes.StateRootKey))
+	if err != nil {
+		if err != db.ErrNotFound {
+			return "", err
+		}
+	}
+	storeRootFelt := types.BytesToFelt(get)
+
+	stateTrie := newTrie(txn, storeRootFelt, "state")
 
 	log.Default.With("Block Number", sequenceNumber).Info("Processing deployed contracts")
 	for _, deployedContract := range update.DeployedContracts {
@@ -180,58 +192,123 @@ func updateState(
 			log.Default.Panic("Couldn't get contract hash")
 		}
 		hashService.StoreContractHash(remove0x(deployedContract.Address), contractHash)
-		storageTrie := newTrie(txn, remove0x(deployedContract.Address))
-		storageRoot := storageTrie.Commitment()
-		address, ok := new(big.Int).SetString(remove0x(deployedContract.Address), 16)
-		if !ok {
-			// notest
-			log.Default.With("Address", deployedContract.Address).
-				Panic("Couldn't convert Address to Big.Int ")
-		}
-		contractStateValue := contractState(contractHash, storageRoot)
-		stateTrie.Put(address, contractStateValue)
-	}
 
-	log.Default.With("Block Number", sequenceNumber).Info("Processing storage diffs")
-	for k, v := range update.StorageDiffs {
-		formattedAddress := remove0x(k)
-		storageTrie := newTrie(txn, formattedAddress)
-		for _, storageSlots := range v {
-			key, ok := new(big.Int).SetString(remove0x(storageSlots.Key), 16)
-			if !ok {
-				// notest
-				log.Default.With("Storage Slot Key", storageSlots.Key).
-					Panic("Couldn't get the ")
-			}
-			val, ok := new(big.Int).SetString(remove0x(storageSlots.Value), 16)
-			if !ok {
-				// notest
-				log.Default.With("Storage Slot Value", storageSlots.Value).
-					Panic("Couldn't get the contract Hash")
-			}
-			storageTrie.Put(key, val)
-		}
-		storageRoot := storageTrie.Commitment()
-
-		address, ok := new(big.Int).SetString(formattedAddress, 16)
+		formattedAddress := remove0x(deployedContract.Address)
+		addressBig, ok := new(big.Int).SetString(formattedAddress, 16)
+		address := types.BigToFelt(addressBig)
 		if !ok {
 			// notest
 			log.Default.With("Address", formattedAddress).
 				Panic("Couldn't convert Address to Big.Int ")
 		}
-		contractHash := hashService.GetContractHash(formattedAddress)
-		contractStateValue := contractState(contractHash, storageRoot)
 
-		stateTrie.Put(address, contractStateValue)
+		trieLeafForContract, felt := stateTrie.Get(&address)
+		if felt != nil {
+			return "", felt
+		}
+		if err != nil {
+			return "", err
+		}
+
+		contractRoot, err := txn.Get(trieLeafForContract.Bytes())
+		if err != nil {
+			return "", err
+		}
+		storageTrie := newTrie(txn, types.BytesToFelt(contractRoot), "state")
+		storageRoot := storageTrie.RootHash()
+		//toAddress, _ := new(big.Int).SetString(remove0x(deployedContract.Address), 16)
+		//address := types.BigToFelt(toAddress)
+		////address, ok := new(big.Int).SetString(remove0x(deployedContract.Address), 16)
+		//if !ok {
+		//	// notest
+		//	log.Default.With("Address", deployedContract.Address).
+		//		Panic("Couldn't convert Address to Big.Int ")
+		//}
+		contractStateValue := types.BigToFelt(contractState(contractHash, storageRoot.Big()))
+		err = txn.Put(contractStateValue.Bytes(), storageTrie.RootHash().Bytes())
+		if err != nil {
+			log.Default.
+				Panic("Couldn't get the contract Hash")
+			return "", err
+		}
+		stateTrie.Put(&address, &contractStateValue)
 	}
 
-	stateCommitment := remove0x(stateTrie.Commitment().Text(16))
+	log.Default.With("Block Number", sequenceNumber).Info("Processing storage diffs")
+	for k, v := range update.StorageDiffs {
+		formattedAddress := remove0x(k)
+		addressBig, ok := new(big.Int).SetString(formattedAddress, 16)
+		address := types.BigToFelt(addressBig)
+		if !ok {
+			// notest
+			log.Default.With("Address", formattedAddress).
+				Panic("Couldn't convert Address to Big.Int ")
+		}
+
+		trieLeafForContract, felt := stateTrie.Get(&address)
+		if felt != nil {
+			return "", felt
+		}
+		if err != nil {
+			return "", err
+		}
+
+		contractRoot, err := txn.Get(trieLeafForContract.Bytes())
+		if err != nil {
+			return "", err
+		}
+
+		storageTrie := newTrie(txn, types.BytesToFelt(contractRoot), "state")
+		for _, storageSlots := range v {
+			keyBig, ok := new(big.Int).SetString(remove0x(storageSlots.Key), 16)
+			key := types.BigToFelt(keyBig)
+			if !ok {
+				// notest
+				log.Default.With("Storage Slot Key", storageSlots.Key).
+					Panic("Couldn't get the ")
+			}
+			valBig, ok := new(big.Int).SetString(remove0x(storageSlots.Value), 16)
+			val := types.BigToFelt(valBig)
+			if !ok {
+				// notest
+				log.Default.With("Storage Slot Value", storageSlots.Value).
+					Panic("Couldn't get the contract Hash")
+			}
+			err := storageTrie.Put(&key, &val)
+			if err != nil {
+				log.Default.With("Storage Slot Value", storageSlots.Value).
+					Panic("Couldn't get the contract Hash")
+				return "", err
+			}
+		}
+		storageRoot := storageTrie.RootHash()
+
+		contractHash := hashService.GetContractHash(formattedAddress)
+		contractStateValueBig := contractState(contractHash, storageRoot.Big())
+		contractStateValue := types.BigToFelt(contractStateValueBig)
+
+		err = txn.Put(contractStateValue.Bytes(), storageTrie.RootHash().Bytes())
+		if err != nil {
+			log.Default.
+				Panic("Couldn't get the contract Hash")
+			return "", err
+		}
+		err = stateTrie.Put(&address, &contractStateValue)
+		if err != nil {
+			log.Default.With("Error", err).
+				Panic("Couldn't get the contract Hash")
+			return "", err
+		}
+	}
+
+	stateCommitment := remove0x(stateTrie.RootHash().Hex())
 
 	if stateRoot != "" && stateCommitment != remove0x(stateRoot) {
 		// notest
 		log.Default.With("State Commitment", stateCommitment, "State Root from API", remove0x(stateRoot)).
 			Panic("stateRoot not equal to the one provided")
 	}
+	txn.Put([]byte(starknetTypes.StateRootKey), []byte(stateCommitment))
 	log.Default.With("State Root", stateCommitment).
 		Info("Got State commitment")
 

@@ -256,14 +256,20 @@ func TestUpdateState(t *testing.T) {
 	}
 
 	// Want
-	stateTrie := trie.New(store.New(), 251)
-	storageTrie := trie.New(store.New(), 251)
-	key, _ := new(big.Int).SetString(storageDiff.Key, 16)
-	val, _ := new(big.Int).SetString(storageDiff.Value, 16)
-	storageTrie.Put(key, val)
+	stateTrie, _ := trie.NewTrie(store.New(), nil, 251)
+	storageTrie, _ := trie.NewTrie(store.New(), nil, 251)
+	key := types.HexToFelt(storageDiff.Key)
+	val := types.HexToFelt(storageDiff.Value)
+	//key, _ := new(big.Int).SetString(storageDiff.Key, 16)
+	//val, _ := new(big.Int).SetString(storageDiff.Value, 16)
+	storageTrie.Put(&key, &val)
 	hash, _ := new(big.Int).SetString(contract.ContractHash, 16)
-	address, _ := new(big.Int).SetString(contract.Address, 16)
-	stateTrie.Put(address, contractState(hash, storageTrie.Commitment()))
+	addressBig, _ := new(big.Int).SetString(contract.Address, 16)
+	address := types.BigToFelt(addressBig)
+
+	contractStateBig := contractState(hash, storageTrie.RootHash().Big())
+	contractStateVal := types.BigToFelt(contractStateBig)
+	stateTrie.Put(&address, &contractStateVal)
 
 	// Actual
 	database := db.Databaser(db.NewKeyValueDb(filepath.Join(t.TempDir(), "contractHash"), 0))
@@ -278,9 +284,9 @@ func TestUpdateState(t *testing.T) {
 	}
 	txn.Commit()
 
-	want := stateTrie.Commitment()
+	want := stateTrie.RootHash()
 	commitment, _ := new(big.Int).SetString(stateCommitment, 16)
-	if commitment.Cmp(want) != 0 {
+	if commitment.Cmp(want.Big()) != 0 {
 		t.Error("State roots do not match")
 	}
 }

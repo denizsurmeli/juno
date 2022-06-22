@@ -19,6 +19,8 @@ const (
 	FeltBitLen = 251
 )
 
+var EmptyFelt = HexToFelt("")
+
 type IsFelt interface {
 	Felt() Felt
 }
