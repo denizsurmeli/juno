@@ -59,7 +59,7 @@ func (t *trie) Get(key *types.Felt) (*types.Felt, error) {
 func (t *trie) Put(key *types.Felt, value *types.Felt) error {
 	path := NewPath(t.height, key.Bytes())
 	_, siblings, err := t.get(path)
-	if err != nil && err != ErrNotFound {
+	if err != nil {
 		return err
 	}
 	return t.put(path, &Node{EmptyPath, value}, siblings)

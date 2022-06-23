@@ -180,6 +180,7 @@ func updateState(
 			return "", err
 		}
 	}
+	log.Default.With("State_Root", string(get)).Info("Root")
 	storeRootFelt := types.BytesToFelt(get)
 
 	stateTrie := newTrie(txn, storeRootFelt, "state")
@@ -206,24 +207,12 @@ func updateState(
 		if felt != nil {
 			return "", felt
 		}
-		if err != nil {
-			return "", err
-		}
-
 		contractRoot, err := txn.Get(trieLeafForContract.Bytes())
 		if err != nil {
 			return "", err
 		}
 		storageTrie := newTrie(txn, types.BytesToFelt(contractRoot), "state")
 		storageRoot := storageTrie.RootHash()
-		//toAddress, _ := new(big.Int).SetString(remove0x(deployedContract.Address), 16)
-		//address := types.BigToFelt(toAddress)
-		////address, ok := new(big.Int).SetString(remove0x(deployedContract.Address), 16)
-		//if !ok {
-		//	// notest
-		//	log.Default.With("Address", deployedContract.Address).
-		//		Panic("Couldn't convert Address to Big.Int ")
-		//}
 		contractStateValue := types.BigToFelt(contractState(contractHash, storageRoot.Big()))
 		err = txn.Put(contractStateValue.Bytes(), storageTrie.RootHash().Bytes())
 		if err != nil {
@@ -248,9 +237,6 @@ func updateState(
 		trieLeafForContract, felt := stateTrie.Get(&address)
 		if felt != nil {
 			return "", felt
-		}
-		if err != nil {
-			return "", err
 		}
 
 		contractRoot, err := txn.Get(trieLeafForContract.Bytes())
@@ -308,7 +294,7 @@ func updateState(
 		log.Default.With("State Commitment", stateCommitment, "State Root from API", remove0x(stateRoot)).
 			Panic("stateRoot not equal to the one provided")
 	}
-	txn.Put([]byte(starknetTypes.StateRootKey), []byte(stateCommitment))
+	txn.Put([]byte(starknetTypes.StateRootKey), stateTrie.RootHash().Bytes())
 	log.Default.With("State Root", stateCommitment).
 		Info("Got State commitment")
 
